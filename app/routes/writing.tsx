@@ -1,9 +1,11 @@
-import { Form } from "@remix-run/react";
+import { Form, useActionData } from "@remix-run/react";
 
 import { useUser } from "~/utils";
 import { requireUserId } from "~/session.server";
 import { LoaderFunction, ActionFunction } from "@remix-run/node";
 import { json } from "@remix-run/node";
+import { getUserById, UpdateTokens } from "~/models/user.server";
+import { addCompletion } from "~/models/completions.server";
 
 export const loader: LoaderFunction = async ({ request }) => {
   const userId = await requireUserId(request);
@@ -12,18 +14,87 @@ export const loader: LoaderFunction = async ({ request }) => {
 };
 
 export const action: ActionFunction = async ({ request }) => {
-  const userId = await requireUserId(request)
+  const userId = await requireUserId(request);
+  const currentUser = await getUserById(userId);
 
-  return json({ ok: true })
-}
+  const reqBody = await request.formData();
+  const body = Object.fromEntries(reqBody);
 
-// TODO   Create for for input
+  // Check the user has enought tokens to write
+  const errors = {
+    tokens:
+      currentUser && Number(body.tokens) > currentUser.tokens
+        ? "Not enought tokens"
+        : undefined,
+  };
+
+  //  if not enough return an error
+  const hasErrors = Object.values(errors).some((errorMessage) => errorMessage);
+
+  if (hasErrors) {
+    return json(errors);
+  }
+
+  //  Make the request to OPEN API
+  try {
+    const response = await fetch(
+      "https://api.openai.com/v1/engines/text-davinci-002/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        },
+        body: JSON.stringify({
+          prompt: body.prompt,
+          max_tokens: Number(body.tokens),
+          temperature: 0.9,
+          top_p: 1,
+          frequency_penalty: 0.52,
+          presence_penalty: 0.9,
+          n: 1,
+          best_of: 2,
+          stream: false,
+          logprobs: null,
+        }),
+      }
+    );
+
+    const data = await response.json();
+    const completionText = data.choices[0].text;
+
+    // Save the completion to the database
+    const addedCompletion = await addCompletion({
+      aiCompletion: completionText,
+      userId,
+      prompt: String(body.prompt),
+      tokens: Number(body.tokens),
+    });
+
+    console.log(addedCompletion);
+
+    //  Update the user tokens if request successful
+    const updatedTokens = await UpdateTokens(userId, Number(currentUser && currentUser?.tokens - Number(body.tokens))) 
+
+    return json(addedCompletion, updatedTokens)
+
+  } catch (error: any) {
+    //  if not successful return error
+    return json({ error: error.message });
+  }
+};
+
+// TODO   Create form for input
 // TODO   Create the action submitting the form
 // TODO   Bring recent completions onto page from database
 // TODO   Add styling
 
 export default function Writing() {
   const user = useUser();
+  const errors = useActionData();
+  console.log(errors)
+  
+
   return (
     <div className="text-slate-100">
       <div className="mx-auto mt-4 flex w-full items-center justify-between px-6 text-slate-200">
@@ -40,7 +111,7 @@ export default function Writing() {
         </div>
       </div>
       <h1 className="text-2xl font-bold">AI Writing Tool</h1>
-      <Form action="post">
+      <Form method="post">
         <fieldset className="mt-4 w-full">
           <textarea
             name="prompt"
@@ -48,6 +119,7 @@ export default function Writing() {
             rows={5}
             className="w-full rounded-sm bg-slate-800 p-4 text-slate-200"
           ></textarea>
+          {errors && <p className="text-sm text-red-700">{errors.tokens}</p>}
 
           <div className="mt-4 flex items-center">
             <input

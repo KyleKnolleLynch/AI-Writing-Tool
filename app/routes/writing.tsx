@@ -1,16 +1,26 @@
-import { Form, useActionData } from "@remix-run/react";
+import {
+  Form,
+  useActionData,
+  useLoaderData,
+  useTransition,
+} from "@remix-run/react";
 
-import { useUser } from "~/utils";
 import { requireUserId } from "~/session.server";
 import { LoaderFunction, ActionFunction } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { getUserById, UpdateTokens } from "~/models/user.server";
-import { addCompletion } from "~/models/completions.server";
+import {
+  addCompletion,
+  getMostRecentCompletions,
+} from "~/models/completions.server";
+import { Completion } from "@prisma/client";
 
 export const loader: LoaderFunction = async ({ request }) => {
   const userId = await requireUserId(request);
+  const currentUser = await getUserById(userId);
+  const recentCompletions = await getMostRecentCompletions(String(userId));
 
-  return json({ ok: true });
+  return json({ recentCompletions, currentUser });
 };
 
 export const action: ActionFunction = async ({ request }) => {
@@ -74,26 +84,23 @@ export const action: ActionFunction = async ({ request }) => {
     console.log(addedCompletion);
 
     //  Update the user tokens if request successful
-    const updatedTokens = await UpdateTokens(userId, Number(currentUser && currentUser?.tokens - Number(body.tokens))) 
+    const updatedTokens = await UpdateTokens(
+      userId,
+      Number(currentUser && currentUser?.tokens - Number(body.tokens))
+    );
 
-    return json(addedCompletion, updatedTokens)
-
+    return json({ errors: undefined, addedCompletion });
   } catch (error: any) {
     //  if not successful return error
     return json({ error: error.message });
   }
 };
 
-// TODO   Create form for input
-// TODO   Create the action submitting the form
-// TODO   Bring recent completions onto page from database
-// TODO   Add styling
-
 export default function Writing() {
-  const user = useUser();
   const errors = useActionData();
-  console.log(errors)
-  
+  const loaderData = useLoaderData();
+  const { currentUser: user, recentCompletions } = loaderData;
+  const transition = useTransition();
 
   return (
     <div className="text-slate-100">
@@ -112,12 +119,15 @@ export default function Writing() {
       </div>
       <h1 className="text-2xl font-bold">AI Writing Tool</h1>
       <Form method="post">
-        <fieldset className="mt-4 w-full">
+        <fieldset
+          disabled={transition.state === "submitting"}
+          className="mt-4 w-full"
+        >
           <textarea
             name="prompt"
             id="prompt"
             rows={5}
-            className="w-full rounded-sm bg-slate-800 p-4 text-slate-200"
+            className="w-full rounded-sm bg-slate-800 p-4 text-slate-200 disabled:bg-slate-900 disabled:text-slate-400"
           ></textarea>
           {errors && <p className="text-sm text-red-700">{errors.tokens}</p>}
 
@@ -127,11 +137,11 @@ export default function Writing() {
               name="tokens"
               id="tokens"
               defaultValue={150}
-              className="w-24 rounded-sm bg-slate-800 p-4 text-slate-200"
+              className="w-24 rounded-sm bg-slate-800 p-4 text-slate-200 disabled:bg-slate-900"
             />
             <button
               type="submit"
-              className="ml-4 rounded bg-slate-600 py-2 px-4 text-blue-100 hover:bg-blue-500 active:bg-blue-600"
+              className="ml-4 rounded bg-slate-600 py-2 px-4 text-blue-100 hover:bg-blue-500 active:bg-blue-600 disabled:bg-slate-800"
             >
               Submit
             </button>
@@ -141,6 +151,47 @@ export default function Writing() {
           </div>
         </fieldset>
       </Form>
+
+      {transition.state && transition.state === "submitting" && (
+        <div className="my-6 flex justify-center">
+          <div className="lds-ellipsis">
+            <div></div>
+            <div></div>
+            <div></div>
+            <div></div>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-8">
+        <h2 className="text-xl font-bold text-indigo-500">
+          Recent Completions
+        </h2>
+        {recentCompletions?.map((completion: Completion) => {
+          let text: any = completion.answer;
+          if (text.includes("\n")) {
+            text = text.split("\n");
+          }
+          text = [...text];
+          return (
+            <div key={completion.id} className="mt-10">
+              <h3 className="font-mono text-xl font-semibold text-white">
+                {completion.prompt}
+              </h3>
+              <div>
+                {text?.map((line: string) => (
+                  <p
+                    key={`${line}-${Math.random().toString(36).slice(2, 7)}`}
+                    className="ml-2"
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
